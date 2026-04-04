@@ -1,0 +1,790 @@
+"""
+CLI entry point — interactive REPL and one-shot mode.
+
+Usage
+-----
+Interactive REPL:
+  myagent [OPTIONS]
+
+One-shot (non-interactive):
+  myagent run "create a python port scanner" [OPTIONS]
+
+Utility:
+  myagent --list-models
+  myagent --config
+  myagent --setup
+
+Options
+-------
+  --claude-model MODEL      Claude model to use (alias or full ID)
+  --gemini-model MODEL      Gemini model to use (alias or full ID)
+  --claude-mode  api|cli    Override Claude auth mode
+  --gemini-mode  api|cli    Override Gemini auth mode
+  --work-dir PATH           Working directory for file operations
+  --max-steps N             Maximum plan steps (default: 10)
+  --lang tr|en              Force output language
+  --dry-run                 Show plan without executing
+  --verbose, -v             Show raw model output and step details
+  --list-models             Print available models and exit
+  --config                  Print current configuration and exit
+  --setup                   Run setup wizard and exit
+  --version                 Print version and exit
+
+Model aliases (Claude):
+  opus, sonnet, haiku
+
+Model aliases (Gemini):
+  2.5-pro, 2.5-flash, flash (2.0), 1.5-pro
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from myagent.agent.chat import Chat
+    from myagent.agent.pipeline import RunResult
+
+__version__ = "1.0.0"
+
+
+# ---------------------------------------------------------------------------
+# Session state — accumulates context within one REPL session
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SessionState:
+    """Holds context across REPL turns within a single session."""
+    last_result: "RunResult | None" = None
+    last_task: str = ""
+    run_count: int = 0
+    chat: "Chat | None" = None  # lazily initialised in REPL
+
+    # ── Pronoun / continuation resolution ───────────────────────────────────
+
+    # Keywords that mean "keep going on the last project"
+    _CONTINUE_KW = frozenset({"devam", "devam et", "continue", "devam ettr"})
+
+    # Keywords that mean "fix the last project"
+    _FIX_KW = frozenset({
+        "düzelt", "düzeltle", "fix", "hataları düzelt", "hataları gider",
+        "fix it", "fix bugs", "bugs", "bug fix",
+    })
+
+    # Keywords that mean "add tests"
+    _TEST_KW = frozenset({
+        "test", "test ekle", "testler yaz", "add tests", "write tests", "testleri yaz",
+    })
+
+    # Keywords that mean "run / launch"
+    _RUN_KW = frozenset({
+        "çalıştır", "başlat", "run", "start", "çalıştırır mısın", "başlatır mısın",
+    })
+
+    # Pronouns that refer to the last project
+    _PRONOUNS = ("bunu", "buna", "bunu", "onu", "bu proje", "önceki", "son proje",
+                 "o proje", "onu", "bu kodu", "bu dosyaları")
+
+    def resolve(self, raw: str) -> tuple[str, str]:
+        """Parse user input.
+
+        Returns (resolved_task, session_context_hint).
+        session_context_hint is injected into Claude's planning context.
+        """
+        lower = raw.strip().lower()
+
+        if not self.last_result:
+            return raw, ""
+
+        files = self.last_result.created_files
+        fnames = ", ".join(files[:6]) if files else "(yok)"
+        prev_note = (
+            f"The user previously ran: \"{self.last_task}\"\n"
+            f"Files created: {fnames}\n"
+            f"Treat any continuation as extending/fixing that project."
+        )
+
+        if lower in self._CONTINUE_KW:
+            return (
+                f"Continue and fully complete the previous task: {self.last_task}",
+                prev_note,
+            )
+
+        if lower in self._FIX_KW:
+            return (
+                f"Fix all issues in the previous project. Files: {fnames}. "
+                f"Original task: {self.last_task}",
+                prev_note,
+            )
+
+        if lower in self._TEST_KW:
+            return (
+                f"Add comprehensive tests for the previous project ({fnames}). "
+                f"Original task: {self.last_task}",
+                prev_note,
+            )
+
+        if lower in self._RUN_KW:
+            return (
+                f"Run the main application from the previous project ({fnames}).",
+                prev_note,
+            )
+
+        # Check for pronoun references — inject context but keep original wording
+        if any(p in lower for p in self._PRONOUNS):
+            return raw, prev_note
+
+        # No continuation detected — plain new task, no extra context
+        return raw, ""
+
+    def update(self, result: "RunResult") -> None:
+        self.last_result = result
+        self.last_task = result.task_original
+        self.run_count += 1
+
+_BANNER = """\
+╔══════════════════════════════════════════╗
+║           myagent  v{ver:<6}             ║
+║  Claude plans · Gemini executes          ║
+╚══════════════════════════════════════════╝
+'help' yazın — yardım için.  'exit' — çıkış.
+""".format(ver=__version__)
+
+_HELP_TEXT = """\
+myagent — Seninle konuşur, kod yazar, projeleri hatırlar.
+
+Nasıl kullanılır:
+  Herhangi bir şey yaz — Claude ne demek istediğini anlar:
+    • Soru soruyorsan doğrudan yanıtlar
+    • Kod/proje istiyorsan Gemini'ye yaptırır
+    • "buna test ekle", "açıkla", "neden böyle?" gibi ifadeler anlaşılır
+
+Komutlar:
+  run <görev>          Görevi doğrudan pipeline'a gönder (Chat'i atla)
+  devam / devam et     Son projeye devam et
+  düzelt / fix         Son projede hataları düzelt
+  test ekle            Son projeye test yaz
+  geçmiş / history     Geçmiş görev kayıtlarını göster
+  son / last           Son görevin detaylarını göster
+  dosyalar / ls        Çalışma dizinindeki dosyaları listele
+  temizle              Çalışma dizinini temizle
+  setup                Auth ve model ayarlarını yeniden yapılandır
+  models               Mevcut modelleri listele
+  config               Mevcut yapılandırmayı göster
+  help                 Bu yardım metnini göster
+  exit                 Çıkış
+
+Özellikler:
+  • Konuşma geçmişi session boyunca hatırlanır
+  • Önceki projeler ve dosyalar bağlam olarak eklenir
+  • Tamamlama doğrulaması: Claude çıktıyı okur, eksik varsa tamamlatır
+
+Örnekler:
+  myagent> basit bir şifre üreteci yaz
+  myagent> fibonacci nedir, nasıl çalışır?
+  myagent> buna GUI ekle
+  myagent> az önce yazdığın kodu açıklar mısın?
+  myagent> düzelt
+"""
+
+
+# ---------------------------------------------------------------------------
+# Argument parser
+# ---------------------------------------------------------------------------
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="myagent",
+        description="Terminal AI agent: Claude plans, Gemini executes.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+
+    # ── Model flags ──────────────────────────────────────────────────────────
+    model_grp = p.add_argument_group("Model selection")
+    model_grp.add_argument(
+        "--claude-model", metavar="MODEL",
+        help="Claude model alias or full ID (e.g. opus, sonnet, claude-opus-4-6)",
+    )
+    model_grp.add_argument(
+        "--gemini-model", metavar="MODEL",
+        help="Gemini model alias or full ID (e.g. 2.5-pro, flash, gemini-2.5-flash)",
+    )
+
+    # ── Auth mode flags ──────────────────────────────────────────────────────
+    auth_grp = p.add_argument_group("Auth mode override")
+    auth_grp.add_argument(
+        "--claude-mode", metavar="api|cli", choices=["api", "cli"],
+        help="Override Claude auth mode for this session",
+    )
+    auth_grp.add_argument(
+        "--gemini-mode", metavar="api|cli|claude", choices=["api", "cli", "claude"],
+        help="Worker backend: api (fast, needs key), cli (slow ~40s), claude (fast, uses Claude Code auth)",
+    )
+
+    # ── Behaviour flags ──────────────────────────────────────────────────────
+    beh_grp = p.add_argument_group("Behaviour")
+    beh_grp.add_argument(
+        "--work-dir", metavar="PATH",
+        help="Working directory for file/command execution (overrides MYAGENT_WORK_DIR)",
+    )
+    beh_grp.add_argument(
+        "--max-steps", type=int, metavar="N",
+        help="Maximum number of plan steps (default: 10)",
+    )
+    beh_grp.add_argument(
+        "--lang", metavar="tr|en", choices=["tr", "en"],
+        help="Force output language (default: auto-detect from system locale)",
+    )
+    beh_grp.add_argument(
+        "--dry-run", action="store_true",
+        help="Show plan steps without executing them",
+    )
+    beh_grp.add_argument(
+        "--sequential", action="store_true",
+        help="Execute steps one-by-one instead of batch (more context passing, more calls)",
+    )
+    beh_grp.add_argument(
+        "--clarify", action="store_true",
+        help="Ask clarifying questions before planning (default: off)",
+    )
+    beh_grp.add_argument(
+        "--no-review", action="store_true",
+        help="Skip the review and fix loop after execution",
+    )
+    beh_grp.add_argument(
+        "--max-review-rounds", type=int, default=2, metavar="N",
+        help="Maximum review/fix iterations (default: 2)",
+    )
+    beh_grp.add_argument(
+        "--auto-deps", action="store_true",
+        help="Automatically install missing Python packages without asking (default: ask)",
+    )
+    beh_grp.add_argument(
+        "--no-complete", action="store_true",
+        help="Skip the completion verification step after review",
+    )
+    beh_grp.add_argument(
+        "--max-completion-rounds", type=int, default=2, metavar="N",
+        help="Maximum completion verification iterations (default: 2)",
+    )
+    beh_grp.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="Show raw model output and per-step details",
+    )
+
+    # ── Utility flags ────────────────────────────────────────────────────────
+    util_grp = p.add_argument_group("Utility")
+    util_grp.add_argument(
+        "--list-models", action="store_true",
+        help="List available models for Claude and Gemini, then exit",
+    )
+    util_grp.add_argument(
+        "--config", action="store_true",
+        help="Show current configuration and exit",
+    )
+    util_grp.add_argument(
+        "--setup", action="store_true",
+        help="Run the setup wizard and exit",
+    )
+    util_grp.add_argument(
+        "--version", action="version", version=f"myagent {__version__}",
+    )
+
+    # ── Positional (one-shot mode) ───────────────────────────────────────────
+    p.add_argument(
+        "task", nargs="?", metavar="TASK",
+        help="Run a single task non-interactively (skips REPL)",
+    )
+
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Utility actions
+# ---------------------------------------------------------------------------
+
+def _show_models() -> None:
+    from myagent.config.auth import get_claude_model, get_gemini_model, get_claude_mode, get_gemini_mode
+    from myagent.models import (
+        CLAUDE_CURATED, GEMINI_CURATED,
+        fetch_claude_models, fetch_gemini_models,
+        format_model_table,
+    )
+    import os
+
+    cur_claude = get_claude_model()
+    cur_gemini = get_gemini_model()
+
+    # Claude
+    print("\nClaude models:")
+    if get_claude_mode() == "api":
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if api_key:
+            print("  (API üzerinden getiriliyor...)", end="\r", flush=True)
+            models = fetch_claude_models(api_key)
+            print("                                   ")
+        else:
+            models = CLAUDE_CURATED
+    else:
+        models = CLAUDE_CURATED
+    print(format_model_table(models, cur_claude))
+
+    # Gemini
+    print("\nGemini models:")
+    if get_gemini_mode() == "api":
+        api_key = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+        if api_key:
+            print("  (API üzerinden getiriliyor...)", end="\r", flush=True)
+            models = fetch_gemini_models(api_key)
+            print("                                   ")
+        else:
+            models = GEMINI_CURATED
+    else:
+        models = GEMINI_CURATED
+    print(format_model_table(models, cur_gemini))
+    print()
+
+
+def _show_config() -> None:
+    from myagent.config.auth import (
+        CONFIG_PATH, get_claude_mode, get_claude_model,
+        get_gemini_mode, get_gemini_model, get_overrides, load_config,
+    )
+    from myagent.config.settings import WORK_DIR, MAX_STEPS
+    from myagent.i18n.locale import SYSTEM_LANGUAGE
+
+    cfg = load_config()
+    ovr = get_overrides()
+
+    print("\n── Yapılandırma ──────────────────────────────────")
+    print(f"  Config dosyası  : {CONFIG_PATH}")
+    print(f"  Claude mode     : {get_claude_mode()}")
+    print(f"  Claude model    : {get_claude_model()}")
+    print(f"  Gemini mode     : {get_gemini_mode()}")
+    print(f"  Gemini model    : {get_gemini_model()}")
+    print(f"  Work dir        : {WORK_DIR}")
+    print(f"  Max steps       : {MAX_STEPS}")
+    print(f"  System language : {SYSTEM_LANGUAGE}")
+    if ovr:
+        print(f"  Runtime overrides: {ovr}")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Run handler (shared by REPL and one-shot)
+# ---------------------------------------------------------------------------
+
+def _handle_run(
+    task: str,
+    verbose: bool,
+    dry_run: bool,
+    lang: str | None,
+    batch: bool = True,
+    clarify: bool = True,
+    review: bool = True,
+    max_review_rounds: int = 2,
+    auto_deps: bool = False,
+    verify_completion: bool = True,
+    max_completion_rounds: int = 2,
+    session: "SessionState | None" = None,
+) -> "RunResult | None":
+    if not task.strip():
+        print("Kullanım: run <görev açıklaması>")
+        return None
+
+    from myagent.agent.pipeline import run
+    from myagent.i18n.locale import SYSTEM_LANGUAGE
+
+    # ── Session context / continuation resolution ──────────────────────────
+    session_context = ""
+    resolved_task = task
+    if session and session.last_result:
+        resolved_task, session_context = session.resolve(task)
+        if resolved_task != task:
+            from myagent.ui import make_ui
+            _ui = make_ui(verbose=verbose)
+            _ui.session_context_notice(f"Bağlam → \"{resolved_task[:80]}\"")
+
+    try:
+        result = run(
+            resolved_task,
+            verbose=verbose,
+            dry_run=dry_run,
+            batch=batch,
+            clarify=clarify,
+            review=review,
+            max_review_rounds=max_review_rounds,
+            auto_deps=auto_deps,
+            verify_completion=verify_completion,
+            max_completion_rounds=max_completion_rounds,
+            session_context=session_context,
+        )
+    except RuntimeError as exc:
+        print(f"Hata: {exc}")
+        return None
+
+    if session:
+        session.update(result)
+
+    # In TTY mode the rich UI already rendered a full summary panel — don't duplicate.
+    # In non-TTY mode (piped / CI) print the plain-text summary for scripting use.
+    if not sys.stdout.isatty():
+        output_lang = lang or SYSTEM_LANGUAGE
+        if output_lang == "tr":
+            print(f"\n{result.summary_tr}\n")
+        else:
+            print(f"\n{result.summary_en}\n")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Agentic helper commands
+# ---------------------------------------------------------------------------
+
+def _show_history(arg: str = "") -> None:
+    """Display past task history."""
+    from myagent.memory.history import format_history_table, load_recent
+    from myagent.ui import make_ui
+
+    n = 20
+    if arg.strip().isdigit():
+        n = int(arg.strip())
+
+    text = format_history_table(n)
+    ui = make_ui()
+    ui.history_table(text)
+
+
+def _show_last(session: "SessionState") -> None:
+    """Show the last task result in this session (or from history if session empty)."""
+    from myagent.memory.history import last_run
+    from myagent.ui import make_ui
+    from myagent.config.settings import WORK_DIR
+
+    ui = make_ui()
+
+    # Prefer live session data
+    r = None
+    if session.last_result:
+        r_live = session.last_result
+        files = "\n".join(f"  • {f}" for f in r_live.created_files) or "  (yok)"
+        status = "✓" if r_live.success else "✗"
+        rev = "✓ review onaylı" if r_live.review_approved else ""
+        compl = "✓ tamamlama doğrulandı" if r_live.completion_verified else ""
+        flags = "  ".join(filter(None, [rev, compl]))
+        msg = (
+            f"Son görev: {r_live.task_original}\n"
+            f"Durum   : {status}  {flags}\n"
+            f"Dosyalar:\n{files}"
+        )
+        ui.session_context_notice(msg)
+        return
+
+    # Fall back to history
+    r = last_run()
+    if not r:
+        print("  (henüz kayıt yok)")
+        return
+
+    status = "✓" if r.get("review_approved") or r.get("success") else "✗"
+    files = "\n".join(f"  • {f}" for f in r.get("files", [])) or "  (yok)"
+    msg = (
+        f"Son görev ({r.get('timestamp','')[:16]}): {r.get('task','')}\n"
+        f"Durum   : {status}  ID: {r.get('id','')}\n"
+        f"Dosyalar:\n{files}"
+    )
+    ui.session_context_notice(msg)
+
+
+def _clean_workspace(arg: str = "") -> None:
+    """Remove all non-hidden files/dirs from WORK_DIR (asks for confirmation)."""
+    from myagent.config.settings import WORK_DIR
+
+    if arg.strip().lower() not in ("--force", "-f", "force"):
+        answer = input(
+            f"  {WORK_DIR} içindeki tüm dosyalar silinecek. Emin misiniz? (evet/hayır): "
+        ).strip().lower()
+        if answer not in ("evet", "e", "yes", "y"):
+            print("  İptal edildi.")
+            return
+
+    import shutil
+    removed: list[str] = []
+    for p in WORK_DIR.iterdir():
+        if p.name.startswith("."):
+            continue  # keep .myagent history
+        try:
+            if p.is_dir():
+                shutil.rmtree(p)
+            else:
+                p.unlink()
+            removed.append(p.name)
+        except Exception as exc:
+            print(f"  ✗ {p.name}: {exc}")
+
+    if removed:
+        print(f"  Silindi: {', '.join(removed)}")
+    else:
+        print("  Zaten temiz.")
+
+
+def _handle_chat(
+    raw: str,
+    session: "SessionState",
+    verbose: bool = False,
+    dry_run: bool = False,
+    lang: str | None = None,
+    batch: bool = True,
+    clarify: bool = True,
+    review: bool = True,
+    max_review_rounds: int = 2,
+    auto_deps: bool = False,
+    verify_completion: bool = True,
+    max_completion_rounds: int = 2,
+) -> None:
+    """Route user input through Chat — either answer directly or execute a task."""
+    from myagent.agent.chat import Chat
+    from myagent.ui import make_ui
+
+    if session.chat is None:
+        session.chat = Chat()
+
+    ui = make_ui(verbose=verbose)
+
+    with ui.streaming("Claude düşünüyor…", color="medium_purple1") as write:
+        route = session.chat.route(raw, stream_callback=write)
+
+    if route.action == "answer":
+        ui.chat_answer(route.answer)
+        return
+
+    # TASK — run through the pipeline
+    task = route.task or raw
+    result = _handle_run(
+        task,
+        verbose=verbose,
+        dry_run=dry_run,
+        lang=lang,
+        batch=batch,
+        clarify=clarify,
+        review=review,
+        max_review_rounds=max_review_rounds,
+        auto_deps=auto_deps,
+        verify_completion=verify_completion,
+        max_completion_rounds=max_completion_rounds,
+        session=session,
+    )
+
+    # Feed result summary back into chat history for context
+    if result and session.chat:
+        session.chat.add_task_result(
+            task=result.task_original,
+            summary=result.summary_en,
+        )
+
+
+def _show_workspace_files() -> None:
+    """List files in WORK_DIR with their owning task."""
+    from myagent.config.settings import WORK_DIR
+    from myagent.memory.history import get_file_owners
+
+    owners = get_file_owners()
+    print(f"\n  Çalışma dizini: {WORK_DIR}")
+    any_file = False
+    for p in sorted(WORK_DIR.iterdir()):
+        if p.name.startswith("."):
+            continue
+        meta = owners.get(p.name, {})
+        task_hint = f"  ← {meta['task'][:50]}" if meta else ""
+        print(f"  {'d' if p.is_dir() else 'f'}  {p.name}{task_hint}")
+        any_file = True
+    if not any_file:
+        print("  (boş)")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# REPL
+# ---------------------------------------------------------------------------
+
+def _repl(
+    verbose: bool,
+    dry_run: bool,
+    lang: str | None,
+    batch: bool = True,
+    clarify: bool = True,
+    review: bool = True,
+    max_review_rounds: int = 2,
+    auto_deps: bool = False,
+    verify_completion: bool = True,
+    max_completion_rounds: int = 2,
+) -> None:
+    print(_BANNER)
+
+    session = SessionState()
+    _run_kwargs = dict(
+        verbose=verbose, dry_run=dry_run, lang=lang, batch=batch,
+        clarify=clarify, review=review, max_review_rounds=max_review_rounds,
+        auto_deps=auto_deps, verify_completion=verify_completion,
+        max_completion_rounds=max_completion_rounds,
+    )
+
+    while True:
+        try:
+            raw = input("myagent> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye.")
+            break
+
+        if not raw:
+            continue
+
+        parts = raw.split(maxsplit=1)
+        cmd = parts[0].lower()
+        arg = parts[1] if len(parts) > 1 else ""
+
+        if cmd == "exit":
+            print("Goodbye.")
+            break
+
+        elif cmd == "help":
+            print(_HELP_TEXT)
+
+        elif cmd == "run":
+            _handle_run(arg, session=session, **_run_kwargs)
+
+        elif cmd in ("geçmiş", "gecmis", "history", "hist"):
+            _show_history(arg)
+
+        elif cmd in ("son", "last"):
+            _show_last(session)
+
+        elif cmd in ("temizle", "clean", "clear-workspace"):
+            _clean_workspace(arg)
+
+        elif cmd in ("dosyalar", "files", "ls"):
+            _show_workspace_files()
+
+        elif cmd == "setup":
+            from myagent.setup_wizard import run_wizard
+            run_wizard()
+
+        elif cmd in ("models", "list-models"):
+            _show_models()
+
+        elif cmd in ("config", "cfg"):
+            _show_config()
+
+        else:
+            # ── Natural language — route through Chat ────────────────────────
+            _handle_chat(raw, session=session, **_run_kwargs)
+
+
+# ---------------------------------------------------------------------------
+# main()
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    # ── 1. Apply runtime overrides from flags ────────────────────────────────
+    from myagent.config.auth import apply_overrides
+    apply_overrides(
+        claude_model=args.claude_model,
+        gemini_model=args.gemini_model,
+        claude_mode=args.claude_mode,
+        gemini_mode=args.gemini_mode,
+    )
+
+    # ── 2. Apply env/settings overrides ─────────────────────────────────────
+    if args.work_dir:
+        import os
+        os.environ["MYAGENT_WORK_DIR"] = str(Path(args.work_dir).resolve())
+
+    if args.max_steps is not None:
+        import myagent.config.settings as _s
+        _s.MAX_STEPS = args.max_steps
+
+    # ── 3. Utility-only flags (no wizard needed) ─────────────────────────────
+    if args.setup:
+        from myagent.setup_wizard import run_wizard
+        run_wizard()
+        return
+
+    if args.list_models:
+        _show_models()
+        return
+
+    if args.config:
+        _show_config()
+        return
+
+    # ── 4. First-run wizard ──────────────────────────────────────────────────
+    from myagent.config.auth import is_configured
+    if not is_configured():
+        print("\nİlk çalıştırma — kurulum sihirbazı başlatılıyor...")
+        from myagent.setup_wizard import run_wizard
+        run_wizard()
+
+    # ── 5. Validate required credentials ────────────────────────────────────
+    from myagent.config.settings import validate
+    missing = validate()
+    if missing:
+        print(
+            f"\nHata: şu ortam değişkenleri tanımlı değil: {', '.join(missing)}\n"
+            + "\n".join(f"  export {v}=değer" for v in missing)
+            + "\n  veya  myagent --setup  ile auth modunu değiştirin.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # ── 6. One-shot mode ─────────────────────────────────────────────────────
+    batch = not args.sequential
+    clarify = args.clarify
+    review = not args.no_review
+    max_review_rounds = args.max_review_rounds
+    auto_deps = args.auto_deps
+    verify_completion = not getattr(args, "no_complete", False)
+    max_completion_rounds = getattr(args, "max_completion_rounds", 2)
+
+    if args.task:
+        _handle_run(
+            args.task,
+            verbose=args.verbose,
+            dry_run=args.dry_run,
+            lang=args.lang,
+            batch=batch,
+            clarify=clarify,
+            review=review,
+            max_review_rounds=max_review_rounds,
+            auto_deps=auto_deps,
+            verify_completion=verify_completion,
+            max_completion_rounds=max_completion_rounds,
+            session=None,   # no session state in one-shot mode
+        )
+        return
+
+    # ── 7. Interactive REPL ──────────────────────────────────────────────────
+    _repl(
+        verbose=args.verbose,
+        dry_run=args.dry_run,
+        lang=args.lang,
+        batch=batch,
+        clarify=clarify,
+        review=review,
+        max_review_rounds=max_review_rounds,
+        auto_deps=auto_deps,
+        verify_completion=verify_completion,
+        max_completion_rounds=max_completion_rounds,
+    )
+
+
+if __name__ == "__main__":
+    main()

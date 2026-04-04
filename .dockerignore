@@ -1,0 +1,17 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.git
+workspace
+*.egg-info
+ANALYSIS*.md
+MY_ANALYSIS*.md
+SPEC.md
+fibonacci.py
+test_fibonacci.py
+hello_world.py
+port_scanner.py

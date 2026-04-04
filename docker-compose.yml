@@ -1,0 +1,31 @@
+services:
+  myagent:
+    build: .
+    image: myagent:latest
+    volumes:
+      # Work directory — created files appear here on the host
+      - ./workspace:/workspace
+
+      # Auth: Gemini CLI OAuth tokens — read-write so CLI can refresh tokens
+      - ${HOME}/.gemini:/root/.gemini
+
+      # Auth: Claude CLI OAuth session — read-write for same reason
+      - ${HOME}/.claude:/root/.claude
+
+      # Claude CLI config file (separate from the .claude/ directory)
+      - ${HOME}/.claude.json:/root/.claude.json
+
+      # myagent config
+      - ${HOME}/.myagent:/root/.myagent
+
+    environment:
+      # API keys — optional, CLI OAuth (mounted above) is used if not set
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+    # Interactive terminal (required for REPL and clarifier)
+    stdin_open: true
+    tty: true
+
+    # No network restriction — pip install etc. need internet
+    # To harden further: use a custom bridge network with egress rules
