@@ -170,7 +170,7 @@ def _print_banner() -> None:
         border_style="dim",
         padding=(0, 2),
         expand=False,
-        subtitle="[dim]'help' → yardım   'exit' → çıkış[/]",
+        subtitle="[dim]/help → yardım   /exit → çıkış[/]",
     ))
     console.print()
 
@@ -204,36 +204,37 @@ def _print_help() -> None:
     console.print()
 
     console.print(_section("Görevler", [
-        ("<herhangi bir şey>",  "Doğal dil — Claude yönlendirir"),
-        ("run <görev>",         "Chat'i atlayarak doğrudan çalıştır"),
-        ("devam / devam et",    "Son projeye devam et"),
-        ("düzelt / fix",        "Son projede hataları düzelt"),
-        ("test ekle",           "Son projeye test yaz"),
+        ("<herhangi bir şey>",   "Doğal dil — Claude yönlendirir"),
+        ("/run <görev>",         "Chat'i atlayarak doğrudan çalıştır"),
+        ("/devam",               "Son projeye devam et"),
+        ("/düzelt  /fix",        "Son projede hataları düzelt"),
+        ("/test",                "Son projeye test yaz"),
     ], "dodger_blue1"))
 
     console.print(_section("Proje & Geçmiş", [
-        ("geçmiş / history",   "Geçmiş görevleri listele"),
-        ("son / last",         "Son görevin detayları"),
-        ("dosyalar / ls",      "Çalışma dizinindeki dosyalar"),
-        ("temizle",            "Çalışma dizinini temizle"),
+        ("/geçmiş  /history",   "Geçmiş görevleri listele"),
+        ("/son  /last",         "Son görevin detayları"),
+        ("/dosyalar  /ls",      "Çalışma dizinindeki dosyalar"),
+        ("/temizle",            "Çalışma dizinini temizle"),
     ], "cyan2"))
 
     console.print(_section("Sistem", [
-        ("setup",              "Auth ve model ayarlarını yeniden yapılandır"),
-        ("models",             "Mevcut modelleri listele"),
-        ("config",             "Yapılandırmayı göster"),
-        ("clear / cls",        "Ekranı temizle"),
-        ("help",               "Bu ekranı göster"),
-        ("exit",               "Çıkış"),
+        ("/setup",              "Auth ve model ayarlarını yeniden yapılandır"),
+        ("/models",             "Mevcut modelleri listele"),
+        ("/config",             "Yapılandırmayı göster"),
+        ("/clear",              "Ekranı temizle"),
+        ("/help",               "Bu ekranı göster"),
+        ("/exit",               "Çıkış"),
     ], "grey70"))
 
     from rich.syntax import Syntax
     examples = "\n".join([
-        "myagent> basit bir şifre üreteci yaz",
-        "myagent> fibonacci nedir, nasıl çalışır?",
-        "myagent> buna GUI ekle",
-        "myagent> az önce yazdığın kodu açıkla",
-        "myagent> düzelt",
+        "myagent ❯ basit bir şifre üreteci yaz",
+        "myagent ❯ fibonacci nedir, nasıl çalışır?",
+        "myagent ❯ buna GUI ekle",
+        "myagent ❯ az önce yazdığın kodu açıkla",
+        "myagent ❯ /düzelt",
+        "myagent ❯ /geçmiş",
     ])
     console.print(Panel(
         Syntax(examples, "text", theme="monokai", background_color="default"),
@@ -455,9 +456,9 @@ def _show_config() -> None:
 
 def _handle_run(
     task: str,
-    verbose: bool,
-    dry_run: bool,
-    lang: str | None,
+    verbose: bool = False,
+    dry_run: bool = False,
+    lang: str | None = None,
     batch: bool = True,
     clarify: bool = True,
     review: bool = True,
@@ -466,18 +467,18 @@ def _handle_run(
     verify_completion: bool = True,
     max_completion_rounds: int = 2,
     session: "SessionState | None" = None,
+    session_context: str = "",
 ) -> "RunResult | None":
     if not task.strip():
-        print("Kullanım: run <görev açıklaması>")
+        print("Kullanım: /run <görev açıklaması>")
         return None
 
     from myagent.agent.pipeline import run
     from myagent.i18n.locale import SYSTEM_LANGUAGE
 
     # ── Session context / continuation resolution ──────────────────────────
-    session_context = ""
     resolved_task = task
-    if session and session.last_result:
+    if not session_context and session and session.last_result:
         resolved_task, session_context = session.resolve(task)
         if resolved_task != task:
             from myagent.ui import make_ui
@@ -719,19 +720,35 @@ def _repl(
         if not raw:
             continue
 
+        # Strip leading "/" — support /command style like Claude Code / Gemini
+        if raw.startswith("/"):
+            raw = raw[1:]
+
         parts = raw.split(maxsplit=1)
         cmd = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""
 
-        if cmd == "exit":
+        if cmd in ("exit", "quit", "çıkış", "cikis"):
             print("Goodbye.")
             break
 
-        elif cmd == "help":
+        elif cmd in ("help", "yardım", "yardim"):
             _print_help()
 
         elif cmd == "run":
             _handle_run(arg, session=session, **_run_kwargs)
+
+        elif cmd in ("devam", "continue") or raw.lower() == "devam et":
+            resolved, ctx = session.resolve("devam")
+            _handle_run(resolved, session=session, session_context=ctx, **_run_kwargs)
+
+        elif cmd in ("düzelt", "duzeltle", "fix", "düzeltle"):
+            resolved, ctx = session.resolve("düzelt")
+            _handle_run(resolved, session=session, session_context=ctx, **_run_kwargs)
+
+        elif raw.lower() in ("test ekle", "testler yaz", "add tests"):
+            resolved, ctx = session.resolve("test ekle")
+            _handle_run(resolved, session=session, session_context=ctx, **_run_kwargs)
 
         elif cmd in ("geçmiş", "gecmis", "history", "hist"):
             _show_history(arg)
