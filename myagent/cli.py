@@ -146,50 +146,103 @@ class SessionState:
         self.last_task = result.task_original
         self.run_count += 1
 
-_BANNER = """\
-╔══════════════════════════════════════════╗
-║           myagent  v{ver:<6}             ║
-║  Claude plans · Gemini executes          ║
-╚══════════════════════════════════════════╝
-'help' yazın — yardım için.  'exit' — çıkış.
-""".format(ver=__version__)
+def _ui_console() -> "Console":
+    from rich.console import Console
+    return Console()
 
-_HELP_TEXT = """\
-myagent — Seninle konuşur, kod yazar, projeleri hatırlar.
 
-Nasıl kullanılır:
-  Herhangi bir şey yaz — Claude ne demek istediğini anlar:
-    • Soru soruyorsan doğrudan yanıtlar
-    • Kod/proje istiyorsan Gemini'ye yaptırır
-    • "buna test ekle", "açıkla", "neden böyle?" gibi ifadeler anlaşılır
+def _print_banner() -> None:
+    from rich.panel import Panel
+    from rich.text import Text
+    console = _ui_console()
+    console.print()
+    console.print(Panel(
+        Text.assemble(
+            ("myagent ", "bold white"),
+            (f"v{__version__}", "dim white"),
+            ("  ·  ", "dim"),
+            ("Claude", "bold medium_purple1"),
+            (" planlar  ", "dim"),
+            ("·", "dim"),
+            ("  Gemini", "bold dodger_blue1"),
+            (" yürütür", "dim"),
+        ),
+        border_style="dim",
+        padding=(0, 2),
+        expand=False,
+        subtitle="[dim]'help' → yardım   'exit' → çıkış[/]",
+    ))
+    console.print()
 
-Komutlar:
-  run <görev>          Görevi doğrudan pipeline'a gönder (Chat'i atla)
-  devam / devam et     Son projeye devam et
-  düzelt / fix         Son projede hataları düzelt
-  test ekle            Son projeye test yaz
-  geçmiş / history     Geçmiş görev kayıtlarını göster
-  son / last           Son görevin detaylarını göster
-  dosyalar / ls        Çalışma dizinindeki dosyaları listele
-  temizle              Çalışma dizinini temizle
-  setup                Auth ve model ayarlarını yeniden yapılandır
-  models               Mevcut modelleri listele
-  config               Mevcut yapılandırmayı göster
-  help                 Bu yardım metnini göster
-  exit                 Çıkış
 
-Özellikler:
-  • Konuşma geçmişi session boyunca hatırlanır
-  • Önceki projeler ve dosyalar bağlam olarak eklenir
-  • Tamamlama doğrulaması: Claude çıktıyı okur, eksik varsa tamamlatır
+def _print_help() -> None:
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
 
-Örnekler:
-  myagent> basit bir şifre üreteci yaz
-  myagent> fibonacci nedir, nasıl çalışır?
-  myagent> buna GUI ekle
-  myagent> az önce yazdığın kodu açıklar mısın?
-  myagent> düzelt
-"""
+    console = _ui_console()
+
+    def _section(title: str, rows: list[tuple[str, str]], color: str) -> Panel:
+        t = Table.grid(padding=(0, 3))
+        t.add_column(style=f"bold {color}", min_width=22)
+        t.add_column(style="dim white")
+        for cmd, desc in rows:
+            t.add_row(cmd, desc)
+        return Panel(t, title=f"[bold {color}]{title}[/]", border_style=color,
+                     padding=(0, 1), expand=False)
+
+    console.print()
+    console.print(Panel(
+        Text.assemble(
+            ("Herhangi bir şey yaz", "bold white"),
+            (" — Claude soru mu görev mi olduğuna karar verir.", "dim"),
+        ),
+        border_style="dim",
+        padding=(0, 1),
+        expand=False,
+    ))
+    console.print()
+
+    console.print(_section("Görevler", [
+        ("<herhangi bir şey>",  "Doğal dil — Claude yönlendirir"),
+        ("run <görev>",         "Chat'i atlayarak doğrudan çalıştır"),
+        ("devam / devam et",    "Son projeye devam et"),
+        ("düzelt / fix",        "Son projede hataları düzelt"),
+        ("test ekle",           "Son projeye test yaz"),
+    ], "dodger_blue1"))
+
+    console.print(_section("Proje & Geçmiş", [
+        ("geçmiş / history",   "Geçmiş görevleri listele"),
+        ("son / last",         "Son görevin detayları"),
+        ("dosyalar / ls",      "Çalışma dizinindeki dosyalar"),
+        ("temizle",            "Çalışma dizinini temizle"),
+    ], "cyan2"))
+
+    console.print(_section("Sistem", [
+        ("setup",              "Auth ve model ayarlarını yeniden yapılandır"),
+        ("models",             "Mevcut modelleri listele"),
+        ("config",             "Yapılandırmayı göster"),
+        ("clear / cls",        "Ekranı temizle"),
+        ("help",               "Bu ekranı göster"),
+        ("exit",               "Çıkış"),
+    ], "grey70"))
+
+    from rich.syntax import Syntax
+    examples = "\n".join([
+        "myagent> basit bir şifre üreteci yaz",
+        "myagent> fibonacci nedir, nasıl çalışır?",
+        "myagent> buna GUI ekle",
+        "myagent> az önce yazdığın kodu açıkla",
+        "myagent> düzelt",
+    ])
+    console.print(Panel(
+        Syntax(examples, "text", theme="monokai", background_color="default"),
+        title="[bold white]Örnekler[/]",
+        border_style="dim",
+        padding=(0, 1),
+        expand=False,
+    ))
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -351,28 +404,49 @@ def _show_models() -> None:
 
 
 def _show_config() -> None:
+    from rich.panel import Panel
+    from rich.table import Table
+
     from myagent.config.auth import (
         CONFIG_PATH, get_claude_mode, get_claude_model,
-        get_gemini_mode, get_gemini_model, get_overrides, load_config,
+        get_gemini_mode, get_gemini_model, get_overrides,
     )
     from myagent.config.settings import WORK_DIR, MAX_STEPS
     from myagent.i18n.locale import SYSTEM_LANGUAGE
 
-    cfg = load_config()
     ovr = get_overrides()
+    console = _ui_console()
+    t = Table.grid(padding=(0, 3))
+    t.add_column(style="dim", min_width=18)
+    t.add_column(style="bold white")
 
-    print("\n── Yapılandırma ──────────────────────────────────")
-    print(f"  Config dosyası  : {CONFIG_PATH}")
-    print(f"  Claude mode     : {get_claude_mode()}")
-    print(f"  Claude model    : {get_claude_model()}")
-    print(f"  Gemini mode     : {get_gemini_mode()}")
-    print(f"  Gemini model    : {get_gemini_model()}")
-    print(f"  Work dir        : {WORK_DIR}")
-    print(f"  Max steps       : {MAX_STEPS}")
-    print(f"  System language : {SYSTEM_LANGUAGE}")
+    claude_mode = get_claude_mode()
+    claude_model = get_claude_model()
+    gemini_mode = get_gemini_mode()
+    gemini_model = get_gemini_model()
+
+    t.add_row("Config",        str(CONFIG_PATH))
+    t.add_row("",              "")
+    t.add_row("Claude mode",   f"[medium_purple1]{claude_mode}[/]")
+    t.add_row("Claude model",  f"[medium_purple1]{claude_model}[/]")
+    t.add_row("Gemini mode",   f"[dodger_blue1]{gemini_mode}[/]")
+    t.add_row("Gemini model",  f"[dodger_blue1]{gemini_model}[/]")
+    t.add_row("",              "")
+    t.add_row("Work dir",      str(WORK_DIR))
+    t.add_row("Max steps",     str(MAX_STEPS))
+    t.add_row("Language",      SYSTEM_LANGUAGE)
     if ovr:
-        print(f"  Runtime overrides: {ovr}")
-    print()
+        t.add_row("Overrides", str(ovr))
+
+    console.print()
+    console.print(Panel(
+        t,
+        title="[bold white]Yapılandırma[/]",
+        border_style="dim",
+        padding=(0, 2),
+        expand=False,
+    ))
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -625,7 +699,7 @@ def _repl(
     verify_completion: bool = True,
     max_completion_rounds: int = 2,
 ) -> None:
-    print(_BANNER)
+    _print_banner()
 
     session = SessionState()
     _run_kwargs = dict(
@@ -637,7 +711,7 @@ def _repl(
 
     while True:
         try:
-            raw = input("myagent> ").strip()
+            raw = input("\033[1;35mmyagent\033[0m \033[35m❯\033[0m ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nGoodbye.")
             break
@@ -654,7 +728,7 @@ def _repl(
             break
 
         elif cmd == "help":
-            print(_HELP_TEXT)
+            _print_help()
 
         elif cmd == "run":
             _handle_run(arg, session=session, **_run_kwargs)
@@ -680,6 +754,11 @@ def _repl(
 
         elif cmd in ("config", "cfg"):
             _show_config()
+
+        elif cmd in ("clear", "cls"):
+            import os
+            os.system("clear")
+            _print_banner()
 
         else:
             # ── Natural language — route through Chat ────────────────────────
