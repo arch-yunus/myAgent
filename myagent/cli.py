@@ -685,6 +685,47 @@ def _show_workspace_files() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Readline — arrow keys, history, tab completion
+# ---------------------------------------------------------------------------
+
+_COMMANDS = [
+    "/help", "/exit", "/quit", "/clear", "/cls",
+    "/run", "/devam", "/düzelt", "/fix", "/test",
+    "/geçmiş", "/history", "/son", "/last",
+    "/dosyalar", "/ls", "/temizle", "/setup",
+    "/models", "/config",
+]
+
+
+def _setup_readline() -> None:
+    try:
+        import readline
+        import atexit
+        from pathlib import Path
+
+        history_file = Path.home() / ".myagent" / "repl_history"
+        history_file.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            readline.read_history_file(history_file)
+        except FileNotFoundError:
+            pass
+
+        readline.set_history_length(500)
+        atexit.register(readline.write_history_file, history_file)
+
+        def _completer(text: str, state: int) -> str | None:
+            matches = [c for c in _COMMANDS if c.startswith(text)]
+            return matches[state] if state < len(matches) else None
+
+        readline.set_completer(_completer)
+        readline.parse_and_bind("tab: complete")
+
+    except ImportError:
+        pass  # Windows fallback — no readline, silent
+
+
+# ---------------------------------------------------------------------------
 # REPL
 # ---------------------------------------------------------------------------
 
@@ -700,6 +741,7 @@ def _repl(
     verify_completion: bool = True,
     max_completion_rounds: int = 2,
 ) -> None:
+    _setup_readline()
     _print_banner()
 
     session = SessionState()
