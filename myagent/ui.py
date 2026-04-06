@@ -265,10 +265,14 @@ class AgentUI:
     def chat_answer(self, text: str) -> None:
         """Render a conversational answer from Claude in a purple panel."""
         from rich.markdown import Markdown
+        self.console.print()
         self.console.print(Panel(
             Markdown(text),
+            title=f"[{C_CLAUDE}]Claude[/]",
+            title_align="left",
             border_style=C_CLAUDE,
-            padding=(0, 1),
+            padding=(1, 2),
+            expand=False,
         ))
         self.console.print()
 

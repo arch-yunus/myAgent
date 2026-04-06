@@ -632,8 +632,9 @@ def _handle_chat(
 
     ui = make_ui(verbose=verbose)
 
-    with ui.streaming("Claude düşünüyor…", color="medium_purple1") as write:
-        route = session.chat.route(raw, stream_callback=write)
+    # Use spinner (no raw streaming) — avoids leaking routing metadata to screen
+    with ui.spinner("Claude düşünüyor…", color="medium_purple1"):
+        route = session.chat.route(raw)
 
     if route.action == "answer":
         ui.chat_answer(route.answer)
@@ -769,6 +770,8 @@ def _repl(
         # Strip leading "/" — support /command style like Claude Code / Gemini
         if raw.startswith("/"):
             raw = raw[1:]
+            if not raw:
+                continue
 
         parts = raw.split(maxsplit=1)
         cmd = parts[0].lower()
