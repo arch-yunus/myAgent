@@ -295,17 +295,12 @@ class AgentUI:
     # ── Chat answer display ──────────────────────────────────────────────────
 
     def chat_answer(self, text: str) -> None:
-        """Render a conversational answer from Claude in a purple panel."""
+        """Render a conversational answer — no box borders so resize never breaks it."""
         from rich.markdown import Markdown
+        from rich.padding import Padding
         self.console.print()
-        self.console.print(Panel(
-            Markdown(text),
-            title=f"[{C_CLAUDE}]Claude[/]",
-            title_align="left",
-            border_style=C_CLAUDE,
-            padding=(1, 2),
-            expand=False,
-        ))
+        self.console.print(f"  [{C_CLAUDE}]Claude[/]  [{C_DIM}]{'─' * 32}[/]")
+        self.console.print(Padding(Markdown(text), (0, 4)))
         self.console.print()
 
     # ── Raw model output (verbose) ────────────────────────────────────────────
