@@ -297,6 +297,10 @@ class AgentUI:
 
     def chat_answer(self, text: str) -> None:
         from rich.markdown import Markdown
+        # Cap at 120 cols: looks good on wide terminals, stays intact when
+        # user resizes to ~half-screen. Scrollback content can't reflow so
+        # full-terminal-width panels break if the terminal is later narrowed.
+        w = min(self.console.width, 120)
         self.console.print()
         self.console.print(Panel(
             Markdown(text),
@@ -304,6 +308,7 @@ class AgentUI:
             title_align="left",
             border_style=C_CLAUDE,
             padding=(1, 2),
+            width=w,
         ))
         self.console.print()
 
