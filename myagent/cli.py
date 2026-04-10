@@ -332,6 +332,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--verbose", "-v", action="store_true",
         help="Show raw model output and per-step details",
     )
+    beh_grp.add_argument(
+        "--tui", action="store_true", default=True,
+        help="Start with Textual TUI (default: on)",
+    )
+    beh_grp.add_argument(
+        "--no-tui", action="store_false", dest="tui",
+        help="Use classic REPL instead of TUI",
+    )
+
     # ── Utility flags ────────────────────────────────────────────────────────
     util_grp = p.add_argument_group("Utility")
     util_grp.add_argument(
