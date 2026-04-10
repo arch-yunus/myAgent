@@ -332,7 +332,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--verbose", "-v", action="store_true",
         help="Show raw model output and per-step details",
     )
-
     # ── Utility flags ────────────────────────────────────────────────────────
     util_grp = p.add_argument_group("Utility")
     util_grp.add_argument(
@@ -1012,19 +1011,24 @@ def main() -> None:
         )
         return
 
-    # ── 7. Interactive REPL ──────────────────────────────────────────────────
-    _repl(
-        verbose=args.verbose,
-        dry_run=args.dry_run,
-        lang=args.lang,
-        batch=batch,
-        clarify=clarify,
-        review=review,
-        max_review_rounds=max_review_rounds,
-        auto_deps=auto_deps,
-        verify_completion=verify_completion,
-        max_completion_rounds=max_completion_rounds,
-    )
+    # ── 7. Interactive TUI or REPL ────────────────────────────────────────────
+    if args.tui and sys.stdout.isatty():
+        from myagent.tui import start_tui
+        session = SessionState()
+        start_tui(session, verbose=args.verbose)
+    else:
+        _repl(
+            verbose=args.verbose,
+            dry_run=args.dry_run,
+            lang=args.lang,
+            batch=batch,
+            clarify=clarify,
+            review=review,
+            max_review_rounds=max_review_rounds,
+            auto_deps=auto_deps,
+            verify_completion=verify_completion,
+            max_completion_rounds=max_completion_rounds,
+        )
 
 
 if __name__ == "__main__":
