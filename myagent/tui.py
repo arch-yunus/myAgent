@@ -23,23 +23,14 @@ from rich.rule import Rule
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
-from textual.coordinate import Coordinate
-from textual.reactive import reactive
+from textual.containers import Horizontal, Vertical
 from textual.widgets import (
     Footer,
     Header,
     Input,
     Label,
-    ListItem,
-    ListView,
-    Log,
-    Markdown as TextualMarkdown,
     RichLog,
-    Static,
-    Tree,
 )
-from textual.worker import Worker, WorkerState
 
 from myagent.agent.chat import Chat
 from myagent.agent.pipeline import RunResult, run
@@ -88,7 +79,7 @@ class TuiAgentUI(AgentUI):
         self._log(t)
 
     def chat_answer(self, text: str) -> None:
-        # For TUI, we just log the markdown
+        self.app._last_answer = text
         self._log(Markdown(text))
 
     def session_context_notice(self, notice: str) -> None:
@@ -124,14 +115,7 @@ class MyAgentApp(App):
         background: $surface;
     }
 
-    #sidebar {
-        width: 30;
-        dock: left;
-        border-right: solid $primary;
-        background: $surface;
-    }
-
-    #chat-container {
+    #chat-log {
         height: 1fr;
         padding: 1 2;
     }
@@ -147,16 +131,12 @@ class MyAgentApp(App):
         border: none;
         background: $surface;
     }
-
-    .system-msg {
-        color: $text-disabled;
-        text-style: italic;
-    }
     """
 
     BINDINGS = [
         ("ctrl+c", "quit", "Çıkış"),
         ("ctrl+l", "clear_log", "Temizle"),
+        ("ctrl+y", "copy_last", "Kopyala"),
         ("f1", "help", "Yardım"),
     ]
 
@@ -164,53 +144,31 @@ class MyAgentApp(App):
         super().__init__()
         self.session = session_state
         self.verbose = verbose
+        self._last_answer: str = ""
         if not self.session.chat:
             self.session.chat = Chat()
         self.ui_bridge = TuiAgentUI(self)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Horizontal():
-            with Vertical(id="sidebar"):
-                yield Label(" [bold]DOSYALAR[/]", id="sidebar-label")
-                yield Tree(str(WORK_DIR), id="file-tree")
-            with Vertical():
-                self.chat_log = RichLog(id="chat-log", highlight=True, markup=True)
-                yield self.chat_log
-                with Horizontal(id="input-container"):
-                    yield Label(" ❯ ", variant="bold")
-                    yield Input(placeholder="Nasıl yardımcı olabilirim?", id="user-input")
+        self.chat_log = RichLog(id="chat-log", highlight=True, markup=True)
+        yield self.chat_log
+        with Horizontal(id="input-container"):
+            yield Label(" ❯ ", variant="bold")
+            yield Input(placeholder="Nasıl yardımcı olabilirim?", id="user-input")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.refresh_tree()
         self.log_message(Text.assemble(
             ("myagent ", "bold white"),
             ("v1.0.0", "dim"),
-            ("  ·  Claude plans  ·  Gemini executes", "dim italic")
+            ("  ·  Claude planlar  ·  Gemini yürütür", "dim"),
         ))
+        self.log_message(Text("  Ctrl+Y → son cevabı kopyala  |  Ctrl+L → temizle  |  F1 → yardım", style="dim"))
         self.query_one("#user-input").focus()
 
     def log_message(self, renderable: Any) -> None:
         self.chat_log.write(renderable)
-
-    def refresh_tree(self) -> None:
-        tree = self.query_one("#file-tree", Tree)
-        tree.clear()
-        tree.root.expand()
-        
-        def add_recursive(path: Path, node: Any):
-            try:
-                for p in sorted(path.iterdir(), key=lambda x: (x.is_file(), x.name)):
-                    if p.name.startswith(".") and p.name != ".myagent":
-                        continue
-                    child = node.add(p.name, expand=True)
-                    if p.is_dir():
-                        add_recursive(p, child)
-            except PermissionError:
-                pass
-
-        add_recursive(WORK_DIR, tree.root)
 
     @on(Input.Submitted)
     async def handle_input(self, event: Input.Submitted) -> None:
@@ -285,8 +243,22 @@ class MyAgentApp(App):
     def action_clear_log(self) -> None:
         self.chat_log.clear()
 
+    def action_copy_last(self) -> None:
+        if not self._last_answer:
+            self.notify("Kopyalanacak cevap yok.", severity="warning")
+            return
+        self.copy_to_clipboard(self._last_answer)
+        self.notify("Son cevap panoya kopyalandı.")
+
     def action_help(self) -> None:
-        self.log_message(Markdown("# Yardım\n- CTRL+C: Çıkış\n- CTRL+L: Ekranı temizle\n- F1: Yardım"))
+        self.log_message(Markdown(
+            "## Yardım\n"
+            "- **Ctrl+C**: Çıkış\n"
+            "- **Ctrl+L**: Ekranı temizle\n"
+            "- **Ctrl+Y**: Son cevabı panoya kopyala\n"
+            "- **F1**: Yardım\n"
+            "- `/exit`: Çıkış\n"
+        ))
 
 def start_tui(session: SessionState, verbose: bool = False) -> None:
     app = MyAgentApp(session, verbose=verbose)
