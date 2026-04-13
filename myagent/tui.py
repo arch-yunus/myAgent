@@ -1,42 +1,24 @@
 """
 myagent TUI — Textual-based responsive terminal interface.
-
-Features:
-  • Flexbox layout (responsive to terminal resize)
-  • Scrollable chat log
-  • Real-time model output streaming
-  • Interactive workspace file tree
-  • Tab completion and command history
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import contextmanager
-from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rich.markdown import Markdown
-from rich.panel import Panel
 from rich.rule import Rule
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
-from textual.widgets import (
-    Footer,
-    Header,
-    Input,
-    Label,
-    RichLog,
-)
+from textual.containers import Horizontal
+from textual.widgets import Footer, Header, Input, Label, RichLog
 
 from myagent.agent.chat import Chat
-from myagent.agent.pipeline import RunResult, run
-from myagent.config.auth import get_claude_model, get_gemini_model
 from myagent.config.settings import WORK_DIR
-from myagent.i18n.locale import SYSTEM_LANGUAGE
 from myagent.ui import AgentUI, C_CLAUDE, C_DIM, C_GEMINI, C_OK, C_WARN, C_ERR
 
 if TYPE_CHECKING:
@@ -48,7 +30,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 class TuiAgentUI(AgentUI):
-    """Bridge between agent pipeline and Textual app via message passing."""
+    """Bridge between agent pipeline and Textual app via call_from_thread."""
+
     def __init__(self, app: "MyAgentApp"):
         super().__init__(verbose=app.verbose)
         self.app = app
@@ -57,19 +40,17 @@ class TuiAgentUI(AgentUI):
         self.app.call_from_thread(self.app.log_message, renderable)
 
     def header(self, task: str, claude_model: str, gemini_model: str) -> None:
-        self._log(Rule(f"Task: {task}", style=C_DIM))
+        self._log(Rule(f"[{C_CLAUDE}]{task}[/]", style=C_DIM))
 
     def plan_done(self, steps: list[str]) -> None:
-        t = Text.assemble(
-            (f"\n  Plan ({len(steps)} adım):\n", C_CLAUDE),
-        )
+        t = Text(f"\n  Plan ({len(steps)} adım):\n", style=C_CLAUDE)
         for i, s in enumerate(steps, 1):
             t.append(f"    {i}. ", style=C_DIM)
             t.append(f"{s}\n")
         self._log(t)
 
     def exec_results(self, steps: list[str], results: list[Any]) -> None:
-        t = Text.assemble((f"\n  Yürütme:\n", C_GEMINI))
+        t = Text(f"\n  Yürütme:\n", style=C_GEMINI)
         for i, (step, r) in enumerate(zip(steps, results), 1):
             icon = "✓" if r.ok else "✗"
             color = C_OK if r.ok else C_ERR
@@ -80,32 +61,34 @@ class TuiAgentUI(AgentUI):
 
     def chat_answer(self, text: str) -> None:
         self.app._last_answer = text
-        self._log(Markdown(text))
 
     def session_context_notice(self, notice: str) -> None:
         self._log(Text(f"  ℹ {notice}", style=C_DIM))
 
-    def summary(self, success: bool, review_approved: bool, 
+    def summary(self, success: bool, review_approved: bool,
                 n_review_rounds: int, created_files: list[str]) -> None:
         status = "✓ Tamamlandı" if success else "✗ Hatalarla tamamlandı"
         color = C_OK if success else C_WARN
-        self._log(Text(f"\n{status}\n", style=f"bold {color}"))
-        if created_files:
-            self.app.call_from_thread(self.app.refresh_tree)
+        self._log(Text(f"\n  {status}\n", style=f"bold {color}"))
 
     @contextmanager
     def streaming(self, label: str, color: str = C_DIM):
-        """No-op for TUI — pipeline output goes through log_message."""
         yield lambda x: None
 
     @contextmanager
     def spinner(self, label: str, color: str = C_DIM):
-        """No-op for TUI — spinner not needed in async context."""
         yield
+
 
 # ---------------------------------------------------------------------------
 # Textual App
 # ---------------------------------------------------------------------------
+
+_BANNER = """\
+  ╔╦╗╦ ╦╔═╗╔═╗╔═╗╔╗╔╔╦╗
+  ║║║╚╦╝╠═╣║ ╦║╣ ║║║ ║
+  ╩ ╩ ╩ ╩ ╩╚═╝╚═╝╝╚╝ ╩ """
+
 
 class MyAgentApp(App):
     """Main myagent TUI."""
@@ -117,7 +100,7 @@ class MyAgentApp(App):
 
     #chat-log {
         height: 1fr;
-        padding: 1 2;
+        padding: 0 2;
     }
 
     #input-container {
@@ -155,16 +138,33 @@ class MyAgentApp(App):
         yield self.chat_log
         with Horizontal(id="input-container"):
             yield Label(" ❯ ", variant="bold")
-            yield Input(placeholder="Nasıl yardımcı olabilirim?", id="user-input")
+            yield Input(placeholder="Ne yapmamı istersin?", id="user-input")
         yield Footer()
 
     def on_mount(self) -> None:
+        from myagent.config.auth import get_claude_model, get_gemini_model
+        banner = Text(_BANNER, style=f"bold {C_CLAUDE}")
+        self.log_message(banner)
         self.log_message(Text.assemble(
-            ("myagent ", "bold white"),
-            ("v1.0.0", "dim"),
-            ("  ·  Claude planlar  ·  Gemini yürütür", "dim"),
+            ("  v1.0.0", "dim"),
+            ("  ·  ", "dim"),
+            ("Claude", f"bold {C_CLAUDE}"),
+            (" planlar", "dim"),
+            ("  ·  ", "dim"),
+            ("Gemini", f"bold {C_GEMINI}"),
+            (" yürütür\n", "dim"),
         ))
-        self.log_message(Text("  Ctrl+Y → son cevabı kopyala  |  Ctrl+L → temizle  |  F1 → yardım", style="dim"))
+        self.log_message(Text.assemble(
+            ("  ", ""),
+            (get_claude_model(), C_CLAUDE),
+            ("  /  ", "dim"),
+            (get_gemini_model(), C_GEMINI),
+            ("\n", ""),
+        ))
+        self.log_message(Text(
+            "  Ctrl+Y kopyala  ·  Ctrl+L temizle  ·  F1 yardım\n",
+            style="dim",
+        ))
         self.query_one("#user-input").focus()
 
     def log_message(self, renderable: Any) -> None:
@@ -177,68 +177,91 @@ class MyAgentApp(App):
             return
 
         event.input.value = ""
-        self.log_message(f"\n[bold white]Siz:[/] {user_text}")
+
+        # User message — right-aligned feel with distinct color
+        self.log_message(Text.assemble(
+            ("\n  ", ""),
+            ("Sen  ", f"bold {C_GEMINI}"),
+            (user_text, "bold white"),
+            ("\n", ""),
+        ))
 
         if user_text.startswith("/"):
-            # Handle commands
-            cmd = user_text[1:].lower()
-            if cmd in ("exit", "quit"):
+            cmd = user_text[1:].lower().split()[0]
+            if cmd in ("exit", "quit", "çıkış"):
                 self.exit()
             elif cmd == "help":
-                self.log_message(Markdown("# Yardım\n- /exit: Çıkış\n- /clear: Ekranı temizle"))
+                self.action_help()
+            elif cmd == "clear":
+                self.action_clear_log()
             else:
-                self.run_task(user_text[1:])
+                self.process_task(user_text[1:])
         else:
-            # Normal chat
             self.process_chat(user_text)
 
     @work(exclusive=True)
     async def process_chat(self, text: str) -> None:
-        self.log_message(Text("\n  ⊛ Claude düşünüyor…", style="medium_purple1"))
-        
-        # We need to run model calls in a thread to avoid blocking the UI
+        self.log_message(Text("  ⊛ düşünüyor…\n", style=f"dim {C_CLAUDE}"))
+        t0 = time.time()
+
         loop = asyncio.get_event_loop()
         route = await loop.run_in_executor(None, self.session.chat.route, text)
+        elapsed = time.time() - t0
 
         if route.action == "answer":
-            self.log_message(Markdown(route.answer))
+            answer = route.answer
+            self._last_answer = answer
+            # Assistant message block
+            self.log_message(Text.assemble(
+                ("  Claude  ", f"bold {C_CLAUDE}"),
+                (f"{elapsed:.1f}s\n", "dim"),
+            ))
+            self.log_message(Markdown(answer))
+            self.log_message(Text(""))
         else:
-            # TASK
             task = route.task or text
-            await self.run_agent_pipeline(task)
+            await self._run_pipeline(task)
 
     @work(exclusive=True)
-    async def run_task(self, task: str) -> None:
-        await self.run_agent_pipeline(task)
+    async def process_task(self, task: str) -> None:
+        await self._run_pipeline(task)
 
-    async def run_agent_pipeline(self, task: str) -> None:
+    async def _run_pipeline(self, task: str) -> None:
         from myagent.agent.pipeline import run
-        
-        self.log_message(Text(f"\n  ⊛ Görev başlatıldı: {task}", style="bold white"))
-        
+        t0 = time.time()
+
         loop = asyncio.get_event_loop()
         try:
-            # Run the pipeline with our TUI-aware UI bridge
             result = await loop.run_in_executor(
-                None, 
-                run, 
-                task, 
-                self.verbose, 
-                False, # dry_run
-                True,  # batch
-                True,  # clarify
-                True,  # review
-                2,     # max_review_rounds
-                False, # auto_deps
-                True,  # verify_completion
-                2,     # max_completion_rounds
-                "",    # session_context
-                self.ui_bridge
+                None, run,
+                task,
+                self.verbose,
+                False,   # dry_run
+                True,    # batch
+                False,   # clarify
+                True,    # review
+                2,       # max_review_rounds
+                False,   # auto_deps
+                True,    # verify_completion
+                2,       # max_completion_rounds
+                "",      # session_context
+                self.ui_bridge,
             )
+            elapsed = time.time() - t0
             self.session.update(result)
-            self.session.chat.add_task_result(result.task_original, result.summary_en)
+            if self.session.chat:
+                self.session.chat.add_task_result(result.task_original, result.summary_en)
+            files = ", ".join(result.created_files[:4]) or "—"
+            self.log_message(Text.assemble(
+                ("\n  ", ""),
+                ("✓ ", f"bold {C_OK}"),
+                (f"{elapsed:.1f}s  ", "dim"),
+                ("dosyalar: ", "dim"),
+                (files, "white"),
+                ("\n", ""),
+            ))
         except Exception as e:
-            self.log_message(f"[bold red]Hata:[/] {str(e)}")
+            self.log_message(Text(f"\n  ✗ Hata: {e}\n", style=f"bold {C_ERR}"))
 
     def action_clear_log(self) -> None:
         self.chat_log.clear()
@@ -248,18 +271,19 @@ class MyAgentApp(App):
             self.notify("Kopyalanacak cevap yok.", severity="warning")
             return
         self.copy_to_clipboard(self._last_answer)
-        self.notify("Son cevap panoya kopyalandı.")
+        self.notify("Panoya kopyalandı.")
 
     def action_help(self) -> None:
         self.log_message(Markdown(
-            "## Yardım\n"
-            "- **Ctrl+C**: Çıkış\n"
-            "- **Ctrl+L**: Ekranı temizle\n"
-            "- **Ctrl+Y**: Son cevabı panoya kopyala\n"
-            "- **F1**: Yardım\n"
-            "- `/exit`: Çıkış\n"
+            "### Yardım\n"
+            "- **Ctrl+C** → Çıkış\n"
+            "- **Ctrl+L** → Ekranı temizle\n"
+            "- **Ctrl+Y** → Son cevabı panoya kopyala\n"
+            "- **F1** → Bu yardım\n"
+            "- `/exit` → Çıkış\n"
         ))
 
-def start_tui(session: SessionState, verbose: bool = False) -> None:
+
+def start_tui(session: "SessionState", verbose: bool = False) -> None:
     app = MyAgentApp(session, verbose=verbose)
     app.run(mouse=False)
