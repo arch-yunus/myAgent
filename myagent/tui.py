@@ -7,6 +7,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import os
+import subprocess
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -21,7 +24,8 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, VerticalScroll
 from textual.events import Key
-from textual.widgets import Footer, Header, Input, Label, Static
+from textual.widgets import Footer, Header, Input, Label, OptionList, Static
+from textual.widgets.option_list import Option
 
 from myagent.agent.chat import Chat
 from myagent.ui import AgentUI, C_CLAUDE, C_DIM, C_GEMINI, C_OK, C_WARN, C_ERR
@@ -58,6 +62,31 @@ def _sessions_list() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Slash commands registry
+# ---------------------------------------------------------------------------
+
+_COMMANDS: list[tuple[str, str]] = [
+    ("/about",    "Versiyon bilgileri ve model bilgisi"),
+    ("/auth",     "API anahtarları ve kimlik doğrulama"),
+    ("/clear",    "Ekranı temizle"),
+    ("/compact",  "Konuşma geçmişini özetle ve sıkıştır"),
+    ("/config",   "Mevcut yapılandırmayı göster"),
+    ("/editor",   "Çok satırlı giriş için harici editör aç"),
+    ("/exit",     "Uygulamadan çık"),
+    ("/export",   "Oturumu markdown dosyasına aktar"),
+    ("/help",     "Tüm komutları ve kısayolları göster"),
+    ("/load",     "Oturum yükle  →  /load <numara veya id>"),
+    ("/model",    "Model değiştir  →  /model claude|gemini <ad>"),
+    ("/new",      "Yeni oturum başlat"),
+    ("/rename",   "Oturumu yeniden adlandır  →  /rename <yeni ad>"),
+    ("/sessions", "Kayıtlı oturumları listele"),
+    ("/status",   "Oturum istatistiklerini göster"),
+    ("/theme",    "Temayı değiştir  →  /theme dark|light"),
+    ("/think",    "Ayrıntılı çıktı modunu aç / kapat"),
+]
+
+
+# ---------------------------------------------------------------------------
 # TUI-specific UI Bridge
 # ---------------------------------------------------------------------------
 
@@ -80,7 +109,7 @@ class TuiAgentUI(AgentUI):
         self._log(t)
 
     def exec_results(self, steps: list[str], results: list[Any]) -> None:
-        t = Text(f"\n  Yürütme:\n", style=C_GEMINI)
+        t = Text("\n  Yürütme:\n", style=C_GEMINI)
         for i, (step, r) in enumerate(zip(steps, results), 1):
             icon = "✓" if r.ok else "✗"
             color = C_OK if r.ok else C_ERR
@@ -131,8 +160,15 @@ class MyAgentApp(App):
         scrollbar-size-horizontal: 0;
     }
 
-    #chat-log > Static {
-        width: 100%;
+    #chat-log > Static { width: 100%; }
+
+    #autocomplete {
+        display: none;
+        max-height: 10;
+        border-top: solid $primary;
+        border-bottom: solid $primary;
+        background: $panel;
+        scrollbar-size-vertical: 0;
     }
 
     #input-container {
@@ -158,11 +194,9 @@ class MyAgentApp(App):
         self.session = session_state
         self.verbose = verbose
         self._last_answer: str = ""
-        # Input history (↑↓ navigation)
         self._input_history: list[str] = []
         self._hist_pos: int = -1
         self._hist_draft: str = ""
-        # Session
         self._sid   = str(uuid.uuid4())
         self._sname = datetime.now().strftime("%d %b %Y %H:%M")
         self._msgs: list[dict] = []
@@ -175,6 +209,7 @@ class MyAgentApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield VerticalScroll(id="chat-log")
+        yield OptionList(id="autocomplete")
         with Horizontal(id="input-container"):
             yield Label(" ❯ ", classes="input-prompt")
             yield Input(placeholder="Ne yapmamı istersin?", id="user-input")
@@ -199,7 +234,7 @@ class MyAgentApp(App):
             ("\n", ""),
         ))
         self.log_message(Text(
-            "  ↑↓ geçmiş · Ctrl+Y kopyala · Ctrl+L temizle · F1 yardım\n",
+            "  ↑↓ geçmiş · Tab otomatik tamamla · Ctrl+Y kopyala · Ctrl+L temizle · F1 yardım\n",
             style="dim",
         ))
         self.query_one("#user-input").focus()
@@ -208,16 +243,78 @@ class MyAgentApp(App):
         self.chat_log.mount(Static(renderable))
         self.chat_log.scroll_end(animate=False)
 
-    # ── ↑↓ input history ─────────────────────────────────────────────────────
+    # ── Autocomplete ──────────────────────────────────────────────────────────
+
+    @on(Input.Changed, "#user-input")
+    def on_input_changed(self, event: Input.Changed) -> None:
+        text = event.value
+        ac = self.query_one("#autocomplete", OptionList)
+
+        if not text.startswith("/"):
+            ac.display = False
+            return
+
+        query = text.lower()
+        if query == "/":
+            matches = _COMMANDS
+        else:
+            matches = [(cmd, desc) for cmd, desc in _COMMANDS if cmd.startswith(query)]
+
+        if not matches:
+            ac.display = False
+            return
+
+        ac.clear_options()
+        for cmd, desc in matches:
+            ac.add_option(Option(f"{cmd}  [dim]{desc}[/dim]", id=cmd))
+        ac.display = True
+        ac.highlighted = 0
+
+    @on(OptionList.OptionSelected, "#autocomplete")
+    def on_autocomplete_selected(self, event: OptionList.OptionSelected) -> None:
+        self._complete_autocomplete(event.option.id)
+
+    def _complete_autocomplete(self, cmd: str) -> None:
+        inp = self.query_one("#user-input", Input)
+        ac  = self.query_one("#autocomplete", OptionList)
+        inp.value = cmd + " "
+        inp.cursor_position = len(inp.value)
+        ac.display = False
+        inp.focus()
+
+    # ── Key handling ──────────────────────────────────────────────────────────
 
     def on_key(self, event: Key) -> None:
         inp = self.query_one("#user-input", Input)
+        ac  = self.query_one("#autocomplete", OptionList)
+
+        # Autocomplete navigation (takes priority when visible)
+        if ac.display and ac.option_count > 0:
+            if event.key == "up":
+                event.prevent_default(); event.stop()
+                ac.highlighted = max(0, (ac.highlighted or 0) - 1)
+                return
+            elif event.key == "down":
+                event.prevent_default(); event.stop()
+                ac.highlighted = min(ac.option_count - 1, (ac.highlighted or 0) + 1)
+                return
+            elif event.key in ("tab", "enter"):
+                if ac.highlighted is not None:
+                    event.prevent_default(); event.stop()
+                    opt = ac.get_option_at_index(ac.highlighted)
+                    self._complete_autocomplete(opt.id)
+                    return
+            elif event.key == "escape":
+                event.prevent_default(); event.stop()
+                ac.display = False
+                return
+
+        # Input history (only when autocomplete hidden and input focused)
         if self.focused is not inp:
             return
 
         if event.key == "up":
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             if not self._input_history:
                 return
             if self._hist_pos == -1:
@@ -229,8 +326,7 @@ class MyAgentApp(App):
             inp.cursor_position = len(inp.value)
 
         elif event.key == "down":
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             if self._hist_pos == -1:
                 return
             if self._hist_pos < len(self._input_history) - 1:
@@ -241,7 +337,7 @@ class MyAgentApp(App):
                 inp.value = self._hist_draft
             inp.cursor_position = len(inp.value)
 
-    # ── Input handler ─────────────────────────────────────────────────────────
+    # ── Input submit ──────────────────────────────────────────────────────────
 
     @on(Input.Submitted)
     async def handle_input(self, event: Input.Submitted) -> None:
@@ -253,6 +349,7 @@ class MyAgentApp(App):
         self._hist_draft = ""
         if not self._input_history or self._input_history[-1] != text:
             self._input_history.append(text)
+        self.query_one("#autocomplete", OptionList).display = False
 
         if text.startswith("/"):
             parts = text[1:].split(maxsplit=1)
@@ -281,6 +378,36 @@ class MyAgentApp(App):
         elif cmd in ("clear", "cls", "temizle"):
             self.action_clear_log()
 
+        elif cmd in ("about", "hakkında", "hakkinda"):
+            self._cmd_about()
+
+        elif cmd in ("status", "durum", "istatistik"):
+            self._cmd_status()
+
+        elif cmd in ("config", "yapılandırma", "yapilandirma"):
+            self._cmd_config()
+
+        elif cmd in ("auth", "kimlik", "api"):
+            self._cmd_auth()
+
+        elif cmd in ("model",):
+            await self._cmd_model(arg)
+
+        elif cmd in ("think", "verbose", "ayrıntı", "ayrintimod"):
+            self._cmd_think()
+
+        elif cmd in ("theme", "tema"):
+            self._cmd_theme(arg)
+
+        elif cmd in ("export", "dışa", "disa"):
+            self._cmd_export()
+
+        elif cmd in ("compact", "sıkıştır", "sikistir", "özetle", "ozetle"):
+            await self._cmd_compact()
+
+        elif cmd in ("editor", "editör", "cok_satir"):
+            await self._cmd_editor()
+
         elif cmd in ("sessions", "oturumlar", "gecmis", "geçmiş"):
             self._show_sessions()
 
@@ -301,6 +428,146 @@ class MyAgentApp(App):
         else:
             self._show_user(f"/{cmd}" + (f" {arg}" if arg else ""))
             self.process_task(f"{cmd} {arg}".strip())
+
+    # ── Command implementations ───────────────────────────────────────────────
+
+    def _cmd_about(self) -> None:
+        from myagent.config.auth import get_claude_model, get_gemini_model
+        self.log_message(Text.assemble(
+            ("\n  MyAgent  ", f"bold {C_CLAUDE}"),
+            ("v1.0.0\n\n", "dim"),
+            ("  Claude:  ", "dim"), (get_claude_model(), C_CLAUDE), ("\n", ""),
+            ("  Gemini:  ", "dim"), (get_gemini_model(), C_GEMINI), ("\n", ""),
+            (f"  Tarih:   {datetime.now().strftime('%Y-%m-%d')}\n", "dim"),
+            (f"  Python:  {os.sys.version.split()[0]}\n\n", "dim"),
+        ))
+
+    def _cmd_status(self) -> None:
+        n_user = sum(1 for m in self._msgs if m["role"] == "user")
+        n_asst = sum(1 for m in self._msgs if m["role"] == "assistant")
+        self.log_message(Text.assemble(
+            ("\n  Oturum Durumu\n", f"bold {C_CLAUDE}"),
+            ("  Ad:         ", "dim"), (self._sname, "white"), ("\n", ""),
+            ("  ID:         ", "dim"), (self._sid[:8], "dim"), ("\n", ""),
+            ("  Mesajlar:   ", "dim"), (f"{n_user} soru / {n_asst} cevap\n", "white"),
+            ("  Verbose:    ", "dim"), ("açık\n" if self.verbose else "kapalı\n", "white"),
+            ("  Tema:       ", "dim"), ("dark\n\n" if self.dark else "light\n\n", "white"),
+        ))
+
+    def _cmd_config(self) -> None:
+        from myagent.config.auth import get_claude_model, get_gemini_model
+        mask = lambda k: f"{k[:8]}...{k[-4:]}" if len(k) > 12 else ("eksik" if not k else "***")
+        claude_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        gemini_key = os.environ.get("GEMINI_API_KEY", os.environ.get("GOOGLE_API_KEY", ""))
+        self.log_message(Text.assemble(
+            ("\n  Yapılandırma\n", f"bold {C_CLAUDE}"),
+            ("  Claude model:    ", "dim"), (get_claude_model(), C_CLAUDE), ("\n", ""),
+            ("  Gemini model:    ", "dim"), (get_gemini_model(), C_GEMINI), ("\n", ""),
+            ("  Claude API key:  ", "dim"), (mask(claude_key), "white"), ("\n", ""),
+            ("  Gemini API key:  ", "dim"), (mask(gemini_key), "white"), ("\n\n", ""),
+        ))
+
+    def _cmd_auth(self) -> None:
+        mask = lambda k: f"{k[:8]}...{k[-4:]}" if len(k) > 12 else ("eksik" if not k else "***")
+        claude_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        gemini_key = os.environ.get("GEMINI_API_KEY", os.environ.get("GOOGLE_API_KEY", ""))
+        self.log_message(Text.assemble(
+            ("\n  API Kimlik Doğrulama\n", f"bold {C_CLAUDE}"),
+            ("  ANTHROPIC_API_KEY:  ", "dim"), (mask(claude_key), "white"), ("\n", ""),
+            ("  GEMINI_API_KEY:     ", "dim"), (mask(gemini_key), "white"), ("\n", ""),
+            ("\n  Değiştirmek için ~/.myagent/.env dosyasını düzenleyin.\n\n", "dim"),
+        ))
+
+    async def _cmd_model(self, arg: str) -> None:
+        from myagent.config.auth import get_claude_model, get_gemini_model
+        if not arg:
+            self.log_message(Text.assemble(
+                ("\n  Mevcut Modeller\n", f"bold {C_CLAUDE}"),
+                ("  Claude:  ", "dim"), (get_claude_model(), C_CLAUDE), ("\n", ""),
+                ("  Gemini:  ", "dim"), (get_gemini_model(), C_GEMINI), ("\n", ""),
+                ("\n  Kullanım: /model claude <model-adı>\n", "dim"),
+                ("           /model gemini <model-adı>\n\n", "dim"),
+            ))
+            return
+        parts = arg.split(maxsplit=1)
+        if len(parts) < 2:
+            self.log_message(Text("  Kullanım: /model claude|gemini <model-adı>\n", style=C_DIM))
+            return
+        target, model_name = parts[0].lower(), parts[1]
+        if target == "claude":
+            os.environ["CLAUDE_MODEL"] = model_name
+            self.log_message(Text(f"  ✓ Claude modeli: {model_name}\n", style=C_OK))
+        elif target == "gemini":
+            os.environ["GEMINI_MODEL"] = model_name
+            self.log_message(Text(f"  ✓ Gemini modeli: {model_name}\n", style=C_OK))
+        else:
+            self.log_message(Text("  Geçersiz hedef. 'claude' veya 'gemini' olmalı.\n", style=C_ERR))
+
+    def _cmd_think(self) -> None:
+        self.verbose = not self.verbose
+        self.ui_bridge.verbose = self.verbose
+        self.log_message(Text(
+            f"  ✓ Verbose mod: {'açık' if self.verbose else 'kapalı'}\n", style=C_OK
+        ))
+
+    def _cmd_theme(self, arg: str) -> None:
+        if arg == "light":
+            self.dark = False
+        elif arg == "dark":
+            self.dark = True
+        else:
+            self.dark = not self.dark
+        self.log_message(Text(
+            f"  ✓ Tema: {'dark' if self.dark else 'light'}\n", style=C_OK
+        ))
+
+    def _cmd_export(self) -> None:
+        if not self._msgs:
+            self.log_message(Text("  Dışa aktarılacak mesaj yok.\n", style=C_DIM))
+            return
+        path = Path.home() / f"myagent_export_{self._sid[:8]}.md"
+        lines = [f"# {self._sname}\n\n"]
+        for msg in self._msgs:
+            role = "**Sen**" if msg["role"] == "user" else "**Claude**"
+            ts = msg.get("ts", "")[:16].replace("T", " ")
+            lines.append(f"### {role}  `{ts}`\n\n{msg['text']}\n\n---\n\n")
+        path.write_text("".join(lines), encoding="utf-8")
+        self.log_message(Text(f"  ✓ Dışa aktarıldı: {path}\n", style=C_OK))
+
+    async def _cmd_compact(self) -> None:
+        if not self._msgs:
+            self.log_message(Text("  Sıkıştırılacak mesaj yok.\n", style=C_DIM))
+            return
+        self.log_message(Text("  ⊛ Geçmiş özetleniyor…\n", style=f"dim {C_CLAUDE}"))
+        history = "\n".join(
+            f"{'Kullanıcı' if m['role']=='user' else 'Asistan'}: {m['text'][:500]}"
+            for m in self._msgs
+        )
+        prompt = f"Aşağıdaki konuşmayı 3-5 cümleyle Türkçe özetle:\n\n{history}"
+        loop = asyncio.get_event_loop()
+        route = await loop.run_in_executor(None, self.session.chat.route, prompt)
+        if route.answer:
+            summary_text = f"[Önceki konuşma özeti]: {route.answer}"
+            self._msgs = [{"role": "assistant", "text": summary_text, "ts": datetime.now().isoformat()}]
+            self.session.chat = Chat()
+            self.log_message(Text("  ✓ Geçmiş sıkıştırıldı.\n", style=C_OK))
+            self._autosave()
+
+    async def _cmd_editor(self) -> None:
+        editor = os.environ.get("EDITOR", "nano")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+            f.write("")
+            tmp = f.name
+        try:
+            with self.suspend():
+                subprocess.run([editor, tmp], check=False)
+            text = Path(tmp).read_text(encoding="utf-8").strip()
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+        if text:
+            inp = self.query_one("#user-input", Input)
+            inp.value = text
+            inp.cursor_position = len(text)
 
     def _show_sessions(self) -> None:
         sessions = _sessions_list()
@@ -345,7 +612,6 @@ class MyAgentApp(App):
         self._sname = data.get("name", "yüklendi")
         self._msgs  = data.get("messages", [])
 
-        # Replay visually
         for msg in self._msgs:
             if msg["role"] == "user":
                 self.log_message(Text.assemble(
@@ -441,21 +707,16 @@ class MyAgentApp(App):
         self.notify("Panoya kopyalandı.")
 
     def action_help(self) -> None:
+        rows = "\n".join(f"| `{cmd}` | {desc} |" for cmd, desc in _COMMANDS)
         self.log_message(Markdown(
             "### Komutlar\n"
             "| Komut | Açıklama |\n"
             "|---|---|\n"
-            "| `/help` | Bu yardım |\n"
-            "| `/sessions` | Kayıtlı oturumları listele |\n"
-            "| `/load <n>` | Oturum yükle (numara veya id) |\n"
-            "| `/rename <ad>` | Mevcut oturumu yeniden adlandır |\n"
-            "| `/new` | Yeni oturum başlat |\n"
-            "| `/clear` | Ekranı temizle |\n"
-            "| `/exit` | Çıkış |\n"
-            "\n"
+            + rows + "\n\n"
             "**Kısayollar:**  "
-            "`↑` `↓` komut geçmişi  ·  "
-            "`Ctrl+Y` son cevabı kopyala  ·  "
+            "`↑` `↓` geçmiş  ·  "
+            "`Tab` otomatik tamamla  ·  "
+            "`Ctrl+Y` kopyala  ·  "
             "`Ctrl+L` temizle  ·  "
             "`F1` yardım\n"
         ))
