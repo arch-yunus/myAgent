@@ -35,6 +35,13 @@ ENV_FILE = Path.home() / ".myagent" / ".env"
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _radio_select(radio_set: RadioSet, index: int) -> None:
+    """Programmatically select RadioButton at index inside a RadioSet."""
+    buttons = list(radio_set.query(RadioButton))
+    if 0 <= index < len(buttons):
+        buttons[index].value = True
+
+
 def _save_env(key: str, value: str) -> None:
     """Persist an env var to ~/.myagent/.env (upsert)."""
     ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -210,19 +217,11 @@ class AuthScreen(Screen):
             self.query_one("#gemini-key-input", Input).value = gk
 
         # Select correct radio buttons
-        claude_radio = self.query_one("#claude-radio", RadioSet)
-        if self._current_claude_mode == API:
-            claude_radio.action_select(0)
-        else:
-            claude_radio.action_select(1)
+        claude_idx = 0 if self._current_claude_mode == API else 1
+        _radio_select(self.query_one("#claude-radio", RadioSet), claude_idx)
 
-        worker_radio = self.query_one("#worker-radio", RadioSet)
-        if self._current_worker_mode == CLAUDE_WORKER:
-            worker_radio.action_select(1)
-        elif self._current_worker_mode == CLI:
-            worker_radio.action_select(2)
-        else:
-            worker_radio.action_select(0)
+        worker_idx = {API: 0, CLAUDE_WORKER: 1, CLI: 2}.get(self._current_worker_mode, 0)
+        _radio_select(self.query_one("#worker-radio", RadioSet), worker_idx)
 
         self._refresh_claude_ui(self._current_claude_mode)
         self._refresh_worker_ui(self._current_worker_mode)
@@ -326,11 +325,10 @@ class AuthScreen(Screen):
         with self.app.suspend():
             subprocess.run(["claude", "login"], check=False)
         self._claude_cli = _claude_cli_state()
-        mode = API if self.query_one("#claude-radio", RadioSet).pressed_index == 0 else CLI
-        self._refresh_claude_ui(mode)
-        self._refresh_worker_ui(
-            [API, CLAUDE_WORKER, CLI][self.query_one("#worker-radio", RadioSet).pressed_index or 0]
-        )
+        cidx = self.query_one("#claude-radio", RadioSet).pressed_index or 0
+        self._refresh_claude_ui(API if cidx == 0 else CLI)
+        widx = self.query_one("#worker-radio", RadioSet).pressed_index or 0
+        self._refresh_worker_ui([API, CLAUDE_WORKER, CLI][widx])
 
     @on(Button.Pressed, "#gemini-login-btn")
     async def gemini_login(self) -> None:
