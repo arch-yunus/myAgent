@@ -111,7 +111,7 @@ class AuthScreen(Screen):
     CSS = """
     AuthScreen { background: $surface; }
 
-    #auth-scroll { padding: 1 3; }
+    #auth-scroll { padding: 1 4; }
 
     .auth-title {
         text-style: bold;
@@ -120,25 +120,32 @@ class AuthScreen(Screen):
         margin-bottom: 0;
     }
 
-    .auth-subtitle { color: $text-muted; margin-bottom: 1; }
+    .auth-subtitle { margin-bottom: 1; }
 
-    RadioSet { margin: 0 0 1 2; }
+    RadioSet {
+        margin: 0 0 1 2;
+        width: auto;
+        max-width: 72;
+    }
 
-    .key-input { margin: 0 0 1 2; }
+    .key-input {
+        margin: 0 0 1 2;
+        max-width: 60;
+    }
 
-    .cli-status { margin: 0 0 0 2; }
+    .cli-status  { margin: 0 0 0 2; }
 
     .cli-install-hint {
         margin: 0 0 1 2;
-        color: $text-muted;
     }
 
     .login-btn { margin: 0 0 1 2; width: auto; }
 
     .save-btn {
         margin-top: 2;
-        width: 100%;
-        dock: bottom;
+        margin-bottom: 1;
+        width: 30;
+        align-horizontal: center;
     }
 
     .divider { margin: 1 0; }
@@ -216,13 +223,14 @@ class AuthScreen(Screen):
         if gk:
             self.query_one("#gemini-key-input", Input).value = gk
 
-        # Select correct radio buttons
+        # Defer radio selection until after first render
+        self.call_after_refresh(self._init_selections)
+
+    def _init_selections(self) -> None:
         claude_idx = 0 if self._current_claude_mode == API else 1
         _radio_select(self.query_one("#claude-radio", RadioSet), claude_idx)
-
         worker_idx = {API: 0, CLAUDE_WORKER: 1, CLI: 2}.get(self._current_worker_mode, 0)
         _radio_select(self.query_one("#worker-radio", RadioSet), worker_idx)
-
         self._refresh_claude_ui(self._current_claude_mode)
         self._refresh_worker_ui(self._current_worker_mode)
 

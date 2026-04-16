@@ -290,8 +290,11 @@ class MyAgentApp(App):
     # ── Key handling ──────────────────────────────────────────────────────────
 
     def on_key(self, event: Key) -> None:
-        inp = self.query_one("#user-input", Input)
-        ac  = self.query_one("#autocomplete", OptionList)
+        try:
+            inp = self.query_one("#user-input", Input)
+            ac  = self.query_one("#autocomplete", OptionList)
+        except Exception:
+            return  # AuthScreen veya başka bir ekran aktif, müdahale etme
 
         # Autocomplete navigation (takes priority when visible)
         if ac.display and ac.option_count > 0:
