@@ -31,9 +31,9 @@ def _radio_select(radio_set: RadioSet, index: int) -> None:
 
 
 def _model_label(m: ModelInfo, current_id: str) -> str:
-    rec  = "  [bold yellow]★[/bold yellow]" if m.is_recommended else ""
-    cur  = "  [dim](mevcut)[/dim]" if m.id == current_id else ""
-    return f"{m.id}{rec}{cur}\n    [dim]{m.description}[/dim]"
+    rec = "  ★" if m.is_recommended else ""
+    cur = "  (mevcut)" if m.id == current_id else ""
+    return f"{m.id}{rec}{cur}  —  {m.description}"
 
 
 class ModelScreen(Screen):
@@ -134,7 +134,7 @@ class ModelScreen(Screen):
         radio.clear_options() if hasattr(radio, "clear_options") else None
 
         for m in models:
-            radio.mount(RadioButton(_model_label(m, self._current_claude), markup=True))
+            radio.mount(RadioButton(_model_label(m, self._current_claude)))
 
         self.call_after_refresh(lambda: self._init_claude_selection(models))
 
@@ -147,7 +147,7 @@ class ModelScreen(Screen):
         radio.clear_options() if hasattr(radio, "clear_options") else None
 
         for m in models:
-            radio.mount(RadioButton(_model_label(m, self._current_gemini), markup=True))
+            radio.mount(RadioButton(_model_label(m, self._current_gemini)))
 
         self.call_after_refresh(lambda: self._init_gemini_selection(models))
 
