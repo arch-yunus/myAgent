@@ -76,7 +76,7 @@ _COMMANDS: list[tuple[str, str]] = [
     ("/export",   "Oturumu markdown dosyasına aktar"),
     ("/help",     "Tüm komutları ve kısayolları göster"),
     ("/load",     "Oturum yükle  →  /load <numara veya id>"),
-    ("/model",    "Model değiştir  →  /model claude|gemini <ad>"),
+    ("/model",    "Model seçim ekranı — Claude ve Gemini modelleri"),
     ("/new",      "Yeni oturum başlat"),
     ("/rename",   "Oturumu yeniden adlandır  →  /rename <yeni ad>"),
     ("/sessions", "Kayıtlı oturumları listele"),
@@ -399,8 +399,9 @@ class MyAgentApp(App):
             from myagent.auth_screen import AuthScreen
             self.app.push_screen(AuthScreen())
 
-        elif cmd in ("model",):
-            await self._cmd_model(arg)
+        elif cmd in ("model", "models"):
+            from myagent.model_screen import ModelScreen
+            self.app.push_screen(ModelScreen())
 
         elif cmd in ("think", "verbose", "ayrıntı", "ayrintimod"):
             self._cmd_think()
