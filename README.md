@@ -56,22 +56,22 @@ Claude Code ile aynı işi yaparken token harcamanın onda birine çalışırsı
 │  Worker  (Gemini)                                                │
 │                                                                  │
 │  FILE: password_gen.py  ···  BASH: python password_gen.py        │
-│  Tüm adımlar tek çağrıda — ücretsiz, hızlı, paralel             │
+│  Tüm adımlar tek çağrıda — ücretsiz, hızlı, paralel              │
 └──────────────┬───────────────────────────────────────────────────┘
                │  Dosyalar + çıktı
                ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  Reviewer  (Claude)                                              │
 │                                                                  │
-│  ruff lint → pytest → "LGTM" veya "Şunu düzelt: …"              │
-│  Hata varsa Gemini'ye düzeltme gönderilir  (maks 2 tur)         │
+│  ruff lint → pytest → "LGTM" veya "Şunu düzelt: …"               │
+│  Hata varsa Gemini'ye düzeltme gönderilir  (maks 2 tur)          │
 └──────────────┬───────────────────────────────────────────────────┘
                │
                ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  Verifier  (Claude)                                              │
 │                                                                  │
-│  "COMPLETE" → bitti    "INCOMPLETE: STEP 2" → tekrar döngü      │
+│  "COMPLETE" → bitti    "INCOMPLETE: STEP 2" → tekrar döngü       │
 └──────────────┬───────────────────────────────────────────────────┘
                │
                ▼
@@ -181,16 +181,16 @@ docker compose run --rm myagent   # başlat
   │  myAgent                               12:34:56  Cmt    │
   ├─────────────────────────────────────────────────────────┤
   │                                                         │
-  │                          █████████                      │
-  │                         ███░░░░░███                     │
-  │  ████  ████  ████  ████ ░███    ░███  ████  ████  ████  │
-  │  ░░██  ░░██  ░░██  ░░██ ░███████████ ░░██  ░░██  ░░██   │
-  │   ░░    ░░    ░░    ░░  ░███░░░░░███  ░░    ░░    ░░    │
+  │                          █████████                       │
+  │                         ███░░░░░███                      │
+  │  ████  ████  ████  ████ ░███    ░███  ████  ████  ████       │
+  │  ░░██  ░░██  ░░██  ░░██ ░███████████ ░░██  ░░██  ░░██      │
+  │   ░░    ░░    ░░    ░░  ░███░░░░░███  ░░    ░░    ░░     │
   │                         ░███    ░███                     │
   │  v1.0.0 · Claude planlar · Gemini yürütür               │
   │  claude-sonnet-4-6  /  gemini-2.5-flash                 │
   │                                                         │
-  │  ↑↓ geçmiş · Tab tamamla · Ctrl+Y kopyala · F1 yardım  │
+  │  ↑↓ geçmiş · Tab tamamla · Ctrl+Y kopyala · F1 yardım   │
   │                                                         │
   ├─────────────────────────────────────────────────────────┤
   │ ❯  Ne yapmamı istersin?                                 │
