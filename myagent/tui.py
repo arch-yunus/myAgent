@@ -28,6 +28,7 @@ from textual.widgets import Footer, Header, Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
 from myagent.agent.chat import Chat
+from myagent.agent.doctor import run_diagnostics
 from myagent.ui import AgentUI, C_CLAUDE, C_DIM, C_GEMINI, C_OK, C_WARN, C_ERR
 
 if TYPE_CHECKING:
@@ -71,6 +72,7 @@ _COMMANDS: list[tuple[str, str]] = [
     ("/clear",    "Ekranı temizle"),
     ("/compact",  "Konuşma geçmişini özetle ve sıkıştır"),
     ("/config",   "Mevcut yapılandırmayı göster"),
+    ("/doctor",   "Sistem sağlık kontrolü ve diyagnostik"),
     ("/editor",   "Çok satırlı giriş için harici editör aç"),
     ("/exit",     "Uygulamadan çık"),
     ("/export",   "Oturumu markdown dosyasına aktar"),
@@ -402,6 +404,9 @@ class MyAgentApp(App):
         elif cmd in ("config", "yapılandırma", "yapilandirma"):
             self._cmd_config()
 
+        elif cmd in ("doctor", "check", "kontrol", "doktor"):
+            self._cmd_doctor()
+
         elif cmd in ("auth", "kimlik", "api"):
             from myagent.auth_screen import AuthScreen
             self.app.push_screen(AuthScreen())
@@ -483,6 +488,32 @@ class MyAgentApp(App):
             ("  Claude API key:  ", "dim"), (mask(claude_key), "white"), ("\n", ""),
             ("  Gemini API key:  ", "dim"), (mask(gemini_key), "white"), ("\n\n", ""),
         ))
+
+    def _cmd_doctor(self) -> None:
+        self.log_message(Text.assemble(
+            ("\n  Sistem Sağlık Kontrolü  ", f"bold {C_CLAUDE}"),
+            ("diyagnostik çalışıyor…\n", "dim"),
+        ))
+        self._perform_health_check()
+
+    def _perform_health_check(self) -> None:
+        from rich.table import Table
+        results = run_diagnostics()
+        
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="dim", width=12)
+        table.add_column(width=3)
+        table.add_column()
+
+        for cat, status, msg in results:
+            color = C_OK if status == "✓" else (C_ERR if status == "✗" else C_WARN)
+            if status == "dim content": # Special case from doctor.py
+                status = "!"
+                color = C_DIM
+            table.add_row(cat, Text(status, style=f"bold {color}"), Text(msg, style="white"))
+        
+        self.log_message(table)
+        self.log_message(Text("\n  ✓ Kontrol tamamlandı. Herhangi bir '✗' hatası varsa lütfen düzeltin.\n", style=C_DIM))
 
     def _cmd_auth(self) -> None:
         mask = lambda k: f"{k[:8]}...{k[-4:]}" if len(k) > 12 else ("eksik" if not k else "***")

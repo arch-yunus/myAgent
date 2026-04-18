@@ -195,6 +195,7 @@ myagent> test ekle
 | `/auth` | Kimlik doğrulama ekranı |
 | `/model` | Model seçim ekranı |
 | `/config` | Mevcut yapılandırmayı göster |
+| `/doctor` | Sistem sağlık kontrolü ve diyagnostik |
 | `/status` | Oturum istatistikleri |
 | `/about` | Versiyon ve model bilgileri |
 | `/think` | Verbose modunu aç / kapat |
